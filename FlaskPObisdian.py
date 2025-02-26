@@ -51,14 +51,15 @@ def get_cik(company_name):
     
     normalized_name = normalize_company_name(company_name)
     if not normalized_name:
-        return None
+        return None  # Ensure we return None if normalization fails
 
     cursor.execute("SELECT cik FROM cik_lookup WHERE company_name = ?", (normalized_name,))
-    result = cursor.fetchone()
+    result = cursor.fetchone()  # Returns a tuple (cik,) or None
 
     conn.close()
     
-    return result[0] if result else None
+    return result[0] if result else None  # Return only the CIK if a result is found
+
 
 # ✅ Flask API endpoint
 @app.route("/get_cik", methods=["GET"])
