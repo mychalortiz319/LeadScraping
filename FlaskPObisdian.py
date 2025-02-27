@@ -1,80 +1,63 @@
 from flask import Flask, request, jsonify
-import sqlite3
-import os
-import re
+import redis
+from difflib import get_close_matches
 
 app = Flask(__name__)
 
-# ✅ Ensure the database and table exist
-def initialize_db():
-    DB_PATH = os.path.join(os.getcwd(), "cik_mapping.db")
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS cik_lookup (
-            company_name TEXT PRIMARY KEY,
-            cik TEXT
-        )
-    ''')
-    
-    conn.commit()
-    conn.close()
+# Redis Connection Details
+REDIS_HOST = "redis-13800.c276.us-east-1-2.ec2.redns.redis-cloud.com"
+REDIS_PORT = 13800
+REDIS_USERNAME = "default"
+REDIS_PASSWORD = "7UykUJdubnrw7JCoMxlZOMUtK0TTNpQ5"
 
-# Initialize database before starting the app
-initialize_db()
+# Connect to Redis
+r = redis.StrictRedis(
+    host=REDIS_HOST,
+    port=REDIS_PORT,
+    username=REDIS_USERNAME,  # Only required if Redis has ACL authentication
+    password=REDIS_PASSWORD,
+    decode_responses=True  # Ensures responses are returned as strings
+)
 
-# ✅ Normalize function
-def normalize_company_name(name):
-    """Normalize company names by removing common suffixes and punctuation."""
-    if not isinstance(name, str):  # Ensure input is a string
-        return None
+def get_cik_from_redis(company_name):
+    """
+    Searches Redis for a fuzzy and case-insensitive match and returns the CIK number.
+    """
+    if not company_name:
+        return None  # Ensure input is valid
 
-    name = name.upper().strip()
-    suffixes = [" INC", " LLC", " CORP", " CORPORATION", " LTD", " LIMITED", " LP", " L.P."]
+    company_name = company_name.strip().lower()
 
-    for suffix in suffixes:
-        if name.endswith(suffix):
-            name = name[: -len(suffix)]
-    
-    # Remove punctuation
-    name = re.sub(r'[^A-Z0-9 ]', '', name)
+    # Fetch all keys from Redis (Company Names)
+    keys = r.keys("*")
+    normalized_keys = {key.strip().lower(): key for key in keys}  # Store original names for lookup
 
-    return name
+    # Use fuzzy matching to find the closest match
+    closest_match = get_close_matches(company_name, normalized_keys.keys(), n=1, cutoff=0.6)
 
-# ✅ SQLite connection
-def get_cik(company_name):
-    """Fetch CIK from SQLite database using exact match."""
-    DB_PATH = os.path.join(os.getcwd(), "cik_mapping.db")
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    
-    normalized_name = normalize_company_name(company_name)
-    if not normalized_name:
-        return None  # Ensure we return None if normalization fails
+    if closest_match:
+        best_match = normalized_keys[closest_match[0]]  # Get the original stored key
+        return r.get(best_match)  # Return the corresponding CIK
 
-    cursor.execute("SELECT cik FROM cik_lookup WHERE company_name = ?", (normalized_name,))
-    result = cursor.fetchone()  # Returns a tuple (cik,) or None
+    return None
 
-    conn.close()
-    
-    return result[0] if result else None  # Return only the CIK if a result is found
-
-
-# ✅ Flask API endpoint
 @app.route("/get_cik", methods=["GET"])
 def fetch_cik():
-    try:
-        company_name = request.args.get("company")
-        
-        if not company_name:
-            return jsonify({"error": "Company name required"}), 400
+    """
+    API Endpoint: /get_cik?company=CompanyName
+    Takes a company name as a query parameter and returns the CIK number.
+    """
+    company_name = request.args.get("company")
 
-        cik = get_cik(company_name)
-        
-        return jsonify({"cik": cik}) if cik else jsonify({"error": "CIK not found"}), 404
-    except Exception as e:
-        return jsonify({"error": "Internal Server Error", "details": str(e)}), 500
+    if not company_name:
+        return jsonify({"error": "Company name required"}), 400
+
+    cik = get_cik_from_redis(company_name)
+
+    if cik:
+        return jsonify({"company": company_name, "cik": cik})
+    else:
+        return jsonify({"error": "CIK not found"}), 404
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)  # Render prefers port 10000 or 8080
